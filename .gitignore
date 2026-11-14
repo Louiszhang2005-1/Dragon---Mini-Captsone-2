@@ -1,0 +1,14 @@
+# PlatformIO build output
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Editor / tool state (machine-specific)
+.vscode/
+.claude-flow/
+
+# Archives
+*.zip
+
+# Local secrets (Wi-Fi password)
+secrets.h
