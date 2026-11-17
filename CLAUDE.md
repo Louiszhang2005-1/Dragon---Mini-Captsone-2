@@ -29,15 +29,15 @@ One ESP32 DevKit on the robot runs everything. No second microcontroller.
 
 | Function | Part | ESP32 pins |
 |---|---|---|
-| Left wheels (front, rear) | Driver module 1 (DRV8833-style, no PWM pin) | FL: IN1 19 / IN2 18 · RL: IN1 22 / IN2 23 · STBY 21 |
+| Left wheels (front + rear in parallel on AO1/AO2, joined on breadboard) | Driver module 1, channel A (DRV8833-style, no PWM pin) | AIN1 19 / AIN2 18 · STBY 21 |
 | Right wheels (front, rear) | Driver module 2 | FR: IN1 26 / IN2 27 · RR: IN1 33 / IN2 32 · STBY 25 |
 | Left wing | MG90S servo | 13 |
 | Right wing | MG90S servo (mirrored) | 14 |
 | Egg | MG90S servo | 16 |
-| Bubbles ("soap") | DC motor from an EagleStone 4×AA bubble gun, switched by a logic-level N-MOSFET or D4184 module (low side, flyback diode) | 17 |
+| Bubbles ("soap") | DC motor from an EagleStone 4×AA bubble gun, on driver module 1 channel B (BO1/BO2). No MOSFET available, so a driver channel is used instead. | BIN1 22 / BIN2 23 |
 
-LEDC channels (core 2.x): motors 0–7 (20 kHz, 8-bit), servos 8–10
-(50 Hz, 14-bit), bubble motor 12 (20 kHz). Channels share timers in pairs,
+LEDC channels (core 2.x): wheel motors 0–1 and 4–7, bubble motor 2–3
+(all 20 kHz, 8-bit), servos 8–10 (50 Hz, 14-bit). Channels share timers in pairs,
 so do not put a different frequency on the partner of a used channel.
 
 ### Wireless remote (course "carte manette")

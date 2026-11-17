@@ -24,17 +24,18 @@
     SOAP  (press) -> soap-gun motor runs for SOAP_RUN_MS (one dose)
 
   WIRING SUMMARY
-    Drive (unchanged from RP2_Motor_code):
-      Module 1 (left):  AIN1 19, AIN2 18, BIN1 22, BIN2 23, STBY 21
+    Drive + bubble motor (two DRV8833-style driver modules):
+      Module 1: AIN1 19, AIN2 18 -> AO1/AO2 = BOTH left wheels in parallel
+                (front-left and rear-left joined on a breadboard row pair)
+                BIN1 22, BIN2 23 -> BO1/BO2 = bubble (soap-gun) motor
+                STBY 21
       Module 2 (right): AIN1 26, AIN2 27, BIN1 33, BIN2 32, STBY 25
     Servo signal wires:
       Left wing 13, Right wing 14, Egg 16
     Soap-gun motor (batteries removed from the gun, trigger switch bypassed):
-      GPIO 17 -> 220 Ω -> MOSFET gate, 100 kΩ gate -> GND
-      (logic-level N-MOSFET e.g. AO3400 / IRLZ44N, or a ready-made
-       "MOSFET switch module" such as D4184: SIG=17, GND=GND)
-      Motor + -> 7.4 V rail    |  Motor - -> MOSFET drain  |  source -> GND
-      Diode across the motor (1N5819/1N4007), stripe/cathode to motor +
+      its 2 wires -> BO1 / BO2 of module 1. Nothing goes to the ESP32 directly.
+      If it spins the wrong way (no bubbles), swap the 2 wires or set
+      SOAP_REVERSE = true.
     Dongle outputs:
       OUT1 -> 4 (move left), OUT2 -> 5 (move right), OUT3 -> 15 (egg),
       OUT4 -> 34 (wings),    OUT5 -> 35 (soap)
@@ -46,11 +47,11 @@
     Cell 1 (-) -> GND.  Cell 1 (+) -> Cell 2 (-).  Cell 2 (+) = 7.4 V rail.
     Add a main ON/OFF switch on the 7.4 V wire.
     7.4 V rail -> VM of both motor driver modules (DRV8833 max 10.8 V: OK)
-               -> soap-gun motor + (switched by the MOSFET on its - side)
+               (module 1 also powers the soap-gun motor through BO1/BO2)
                -> 5 V step-down (buck) converter, >= 3 A
                     -> servo red wires (+5 V) AND ESP32 "5V/VIN" pin
     ALL grounds tied together: battery -, buck GND, ESP32 GND, driver GNDs,
-    MOSFET source, servo brown wires, dongle GND.
+    servo brown wires, dongle GND.
     The code caps motor power (MOTOR_MAX_DUTY, SOAP_POWER_PCT) so the
     6 V-rated wheel and bubble motors don't get the full 8.4 V.
     Never power MG90S servos from the ESP32 3V3 pin.
@@ -104,21 +105,23 @@ const bool LOAD_SAVED_PARAMS = true;
 int DRIVE_SPEED      = 255;   // both move buttons held -> straight
 int TURN_OUTER_SPEED = 255;   // wheels on the outside of the turn
 int TURN_INNER_SPEED = -255;  // inside wheels: -255 = spin in place, 0 = wide arc
-int MOTOR_MAX_DUTY = 180;         // hard cap: 180/255 of 8.4 V ≈ 6 V max on
-                                 // the wheel motors. Raise (max 255) if too slow
-                                 // and your motors are rated for more.
+int MOTOR_MAX_DUTY = 255;         // 255 = full power. Battery is now 3.7 V
+                                 // (4.2 V full), so no cap needed.
+                                 // !! If the battery goes back to 7.4 V,
+                                 // set this back to 180 (≈ 6 V max).
 unsigned long RAMP_TIME_MS   = 300;        // time to go 0 -> full (0 = instant)
 unsigned long COMBO_DELAY_MS = 80;         // grace time so pressing both buttons
                                            // doesn't cause a short turn first
 
 // Calibration (same meaning as in RP2_Motor_code)
-float TRIM_FRONT_LEFT  = 1.00;
+// Both left wheels share one driver channel (module 1, A), so the
+// "front left" trim/invert applies to both of them. To flip only the
+// rear-left wheel, swap its 2 wires on the breadboard.
+float TRIM_FRONT_LEFT  = 1.00;   // = both left wheels
 float TRIM_FRONT_RIGHT = 1.00;
-float TRIM_REAR_LEFT   = 1.00;
 float TRIM_REAR_RIGHT  = 1.00;
-bool INVERT_FRONT_LEFT  = false;
+bool INVERT_FRONT_LEFT  = false; // = both left wheels
 bool INVERT_FRONT_RIGHT = false;
-bool INVERT_REAR_LEFT   = false;
 bool INVERT_REAR_RIGHT  = false;
 
 // ======================= WING SETTINGS ========================
@@ -139,17 +142,20 @@ unsigned long WING_PAUSE_MS = 100;  // pause at top and bottom of each flap
 // ======================= EGG SETTINGS =========================
 // Assumed: one servo opens the egg. Each press toggles open/closed.
 float EGG_CLOSED_ANGLE = 0;
-float EGG_OPEN_ANGLE   = 85;
+float EGG_OPEN_ANGLE   = 70;
 float EGG_SPEED_DPS    = 60;   // slow, smooth opening
 
 // ======================= SOAP SETTINGS ========================
-// The DC motor taken out of the soap gun, switched by a MOSFET.
+// The DC motor taken out of the soap gun, driven by channel B of
+// motor driver module 1 (BO1/BO2).
 // Default: each press runs the motor for SOAP_RUN_MS (one dose).
+bool          SOAP_REVERSE     = false; // true = spin the other way (no bubbles?)
 unsigned long SOAP_RUN_MS      = 1500;  // dose length — tune by testing
 bool          SOAP_HOLD_TO_RUN = false; // true = runs as long as button is held
 unsigned long SOAP_MAX_MS      = 5000;  // safety limit in hold mode
 unsigned long SOAP_COOLDOWN_MS = 1000;  // min. time between two doses
-int           SOAP_POWER_PCT   = 75;    // 75% of 8.4 V ≈ 6 V = the gun's 4xAA
+int           SOAP_POWER_PCT   = 100;   // full power on the 3.7 V battery.
+                                        // !! Set back to 75 if battery goes to 7.4 V
 
 // ======================= SERVO PULSE ==========================
 // MG90S: about 500 µs = 0°, 2400 µs = 180°. Narrow this if a servo buzzes
@@ -169,8 +175,11 @@ const uint8_t PIN_BTN_SOAP       = 35;
 const uint8_t PIN_SERVO_WING_L = 13;
 const uint8_t PIN_SERVO_WING_R = 14;
 const uint8_t PIN_SERVO_EGG    = 16;
-const uint8_t PIN_SOAP_MOTOR   = 17;   // -> MOSFET gate (via 220 Ω)
-const uint8_t SOAP_PWM_CH      = 12;   // LEDC channel (core 2.x only)
+// Bubble motor = channel B of driver module 1 (BIN1 / BIN2 -> BO1 / BO2)
+const uint8_t PIN_SOAP_IN1     = 22;
+const uint8_t PIN_SOAP_IN2     = 23;
+const uint8_t SOAP_PWM_CH1     = 2;    // LEDC channels (core 2.x only),
+const uint8_t SOAP_PWM_CH2     = 3;    // same 20 kHz as the wheel motors
 
 const uint8_t STBY_LEFT  = 21;
 const uint8_t STBY_RIGHT = 25;
@@ -354,18 +363,31 @@ void eggToggle() {
 
 
 // ================ SOAP (motor from the soap gun) ==============
-// GPIO -> MOSFET switch -> the gun's original DC motor.
+// ESP32 22/23 -> driver module 1 BIN1/BIN2 -> BO1/BO2 -> gun's DC motor.
 bool soapRunning = false;
 unsigned long soapStartedAt = 0;
 unsigned long soapLastEnded = 0;
 
 void soapMotor(bool on) {
-  uint32_t duty = on ? (uint32_t)(255 * SOAP_POWER_PCT / 100) : 0;
-  pwmWrite(PIN_SOAP_MOTOR, SOAP_PWM_CH, duty);
+  if (!on) {                                   // off = coast (both LOW)
+    pwmWrite(PIN_SOAP_IN1, SOAP_PWM_CH1, 0);
+    pwmWrite(PIN_SOAP_IN2, SOAP_PWM_CH2, 0);
+    return;
+  }
+  // Same slow-decay drive as the wheels: one input HIGH, PWM on the other
+  uint32_t duty = (uint32_t)(255 * constrain(SOAP_POWER_PCT, 0, 100) / 100);
+  if (!SOAP_REVERSE) {
+    pwmWrite(PIN_SOAP_IN1, SOAP_PWM_CH1, 255);
+    pwmWrite(PIN_SOAP_IN2, SOAP_PWM_CH2, 255 - duty);
+  } else {
+    pwmWrite(PIN_SOAP_IN1, SOAP_PWM_CH1, 255 - duty);
+    pwmWrite(PIN_SOAP_IN2, SOAP_PWM_CH2, 255);
+  }
 }
 
 void initSoap() {
-  pwmAttach(PIN_SOAP_MOTOR, SOAP_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+  pwmAttach(PIN_SOAP_IN1, SOAP_PWM_CH1, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
+  pwmAttach(PIN_SOAP_IN2, SOAP_PWM_CH2, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
   soapMotor(false);
 }
 
@@ -407,9 +429,10 @@ struct Motor {
   bool  invert;
 };
 
-Motor motors[4] = {
-  {"Front Left",  19, 18, 0, 1, 1.0, false},  // Module 1, A
-  {"Rear Left",   22, 23, 2, 3, 1.0, false},  // Module 1, B
+// Module 1, B (pins 22/23, channels 2/3) is used by the bubble motor.
+enum { M_LEFT, M_FRONT_RIGHT, M_REAR_RIGHT, NUM_MOTORS };
+Motor motors[NUM_MOTORS] = {
+  {"Left (both)", 19, 18, 0, 1, 1.0, false},  // Module 1, A: front + rear left
   {"Front Right", 26, 27, 4, 5, 1.0, false},  // Module 2, A
   {"Rear Right",  33, 32, 6, 7, 1.0, false},  // Module 2, B
 };
@@ -438,7 +461,7 @@ void coastMotor(const Motor &m) {
 
 void initMotors() {
   // trim / invert are copied into motors[] by syncParams()
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NUM_MOTORS; i++) {
     pwmAttach(motors[i].in1, motors[i].ch1, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
     pwmAttach(motors[i].in2, motors[i].ch2, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
     coastMotor(motors[i]);
@@ -495,10 +518,9 @@ void updateDrive(unsigned long now, float dt) {
   curLeft  = approach(curLeft,  tgtLeft,  maxStep);
   curRight = approach(curRight, tgtRight, maxStep);
 
-  setMotor(motors[0], (int)curLeft);
-  setMotor(motors[1], (int)curLeft);
-  setMotor(motors[2], (int)curRight);
-  setMotor(motors[3], (int)curRight);
+  setMotor(motors[M_LEFT],        (int)curLeft);   // both left wheels
+  setMotor(motors[M_FRONT_RIGHT], (int)curRight);
+  setMotor(motors[M_REAR_RIGHT],  (int)curRight);
 }
 
 
@@ -528,13 +550,11 @@ Param params[] = {
   {"maxDuty","Motor max duty (180 = 6 V)","Drive",P_INT,   &MOTOR_MAX_DUTY,      0,    255,   1},
   {"ramp",   "Ramp time (ms)",           "Drive", P_ULONG, &RAMP_TIME_MS,        0,    2000,  10},
   {"combo",  "Combo delay (ms)",         "Drive", P_ULONG, &COMBO_DELAY_MS,      0,    300,   5},
-  {"trFL",   "Trim front left",          "Wheels",P_FLOAT, &TRIM_FRONT_LEFT,     0,    1.5,   0.01},
+  {"trFL",   "Trim left wheels",         "Wheels",P_FLOAT, &TRIM_FRONT_LEFT,     0,    1.5,   0.01},
   {"trFR",   "Trim front right",         "Wheels",P_FLOAT, &TRIM_FRONT_RIGHT,    0,    1.5,   0.01},
-  {"trRL",   "Trim rear left",           "Wheels",P_FLOAT, &TRIM_REAR_LEFT,      0,    1.5,   0.01},
   {"trRR",   "Trim rear right",          "Wheels",P_FLOAT, &TRIM_REAR_RIGHT,     0,    1.5,   0.01},
-  {"invFL",  "Invert front left",        "Wheels",P_BOOL,  &INVERT_FRONT_LEFT,   0,    1,     1},
+  {"invFL",  "Invert left wheels",       "Wheels",P_BOOL,  &INVERT_FRONT_LEFT,   0,    1,     1},
   {"invFR",  "Invert front right",       "Wheels",P_BOOL,  &INVERT_FRONT_RIGHT,  0,    1,     1},
-  {"invRL",  "Invert rear left",         "Wheels",P_BOOL,  &INVERT_REAR_LEFT,    0,    1,     1},
   {"invRR",  "Invert rear right",        "Wheels",P_BOOL,  &INVERT_REAR_RIGHT,   0,    1,     1},
   {"wLr",    "Left wing rest (deg)",     "Wings", P_FLOAT, &WING_LEFT_REST,      0,    180,   1},
   {"wLf",    "Left wing up (deg)",       "Wings", P_FLOAT, &WING_LEFT_FLAP,      0,    180,   1},
@@ -551,6 +571,7 @@ Param params[] = {
   {"sMax",   "Max run when held (ms)",   "Bubbles",P_ULONG,&SOAP_MAX_MS,         500,  10000, 100},
   {"sCool",  "Cooldown (ms)",            "Bubbles",P_ULONG,&SOAP_COOLDOWN_MS,    0,    5000,  100},
   {"sPow",   "Motor power (%)",          "Bubbles",P_INT,  &SOAP_POWER_PCT,      0,    100,   1},
+  {"sRev",   "Reverse direction",        "Bubbles",P_BOOL, &SOAP_REVERSE,        0,    1,     1},
   {"svMin",  "Servo pulse at 0 deg (us)","Servos",P_INT,   &SERVO_MIN_US,        400,  1500,  10},
   {"svMax",  "Servo pulse at 180 deg (us)","Servos",P_INT, &SERVO_MAX_US,        1500, 2600,  10},
 };
@@ -589,10 +610,9 @@ Param* findParam(const String &key) {
 // Safe to call any time; never starts a motor.
 void syncParams() {
   if (SERVO_MIN_US >= SERVO_MAX_US - 100) SERVO_MIN_US = SERVO_MAX_US - 100;
-  motors[0].trim = TRIM_FRONT_LEFT;  motors[0].invert = INVERT_FRONT_LEFT;
-  motors[1].trim = TRIM_REAR_LEFT;   motors[1].invert = INVERT_REAR_LEFT;
-  motors[2].trim = TRIM_FRONT_RIGHT; motors[2].invert = INVERT_FRONT_RIGHT;
-  motors[3].trim = TRIM_REAR_RIGHT;  motors[3].invert = INVERT_REAR_RIGHT;
+  motors[M_LEFT].trim        = TRIM_FRONT_LEFT;  motors[M_LEFT].invert        = INVERT_FRONT_LEFT;
+  motors[M_FRONT_RIGHT].trim = TRIM_FRONT_RIGHT; motors[M_FRONT_RIGHT].invert = INVERT_FRONT_RIGHT;
+  motors[M_REAR_RIGHT].trim  = TRIM_REAR_RIGHT;  motors[M_REAR_RIGHT].invert  = INVERT_REAR_RIGHT;
   servos[SV_WING_L].speedDps = WING_SPEED_DPS;
   servos[SV_WING_R].speedDps = WING_SPEED_DPS;
   servos[SV_EGG].speedDps    = EGG_SPEED_DPS;
@@ -850,9 +870,9 @@ void setup() {
   syncParams();
   for (int i = 0; i < NUM_SERVO; i++)  // start servos at rest, no motion at boot
     servos[i].current = servos[i].target;
+  initSoap();      // before initMotors(): bubble motor inputs LOW before STBY goes HIGH
   initMotors();
   initServos();
-  initSoap();
   initButtons();
   initWifi();
   Serial.println("==============================");
