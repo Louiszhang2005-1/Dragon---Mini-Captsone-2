@@ -122,22 +122,24 @@ bool INVERT_REAR_LEFT   = false;
 bool INVERT_REAR_RIGHT  = false;
 
 // ======================= WING SETTINGS ========================
-// Angles are servo angles (0..180). REST = wing down (start position),
-// FLAP = wing raised 45° above rest. Fit the horn at power-up so 90° = wing down.
-// The two servos are mirrored, so "up" goes the opposite way on each side.
-// If a wing goes DOWN instead of up, swap the sign of its 45 (e.g. 90 - 45).
-float WING_LEFT_REST   = 90;
-float WING_LEFT_FLAP   = 90 + 45;   // 45° up from rest
-float WING_RIGHT_REST  = 90;
-float WING_RIGHT_FLAP  = 90 - 45;   // mirrored side
+// Angles are servo angles (0..180). REST = start position, FLAP = flapped.
+// The two servos are mirrored, so they move in opposite directions.
+// NOTE: "LEFT"/"RIGHT" are the code names; they are swapped relative to
+// the robot's physical sides.
+// LEFT:  120 -> 8   -> 120
+// RIGHT:  60 -> 180 -> 60  (mirror of LEFT)
+float WING_LEFT_REST   = 120;
+float WING_LEFT_FLAP   = 8;
+float WING_RIGHT_REST  = 180 - 120;  // = 60
+float WING_RIGHT_FLAP  = 180;
 int   WING_CYCLES      = 3;
-float WING_SPEED_DPS   = 250;  // degrees/second (MG90S max ≈ 500–600)
+float WING_SPEED_DPS   = 110;  // degrees/second (MG90S max ≈ 500–600)
 unsigned long WING_PAUSE_MS = 100;  // pause at top and bottom of each flap
 
 // ======================= EGG SETTINGS =========================
 // Assumed: one servo opens the egg. Each press toggles open/closed.
 float EGG_CLOSED_ANGLE = 0;
-float EGG_OPEN_ANGLE   = 90;
+float EGG_OPEN_ANGLE   = 85;
 float EGG_SPEED_DPS    = 60;   // slow, smooth opening
 
 // ======================= SOAP SETTINGS ========================
