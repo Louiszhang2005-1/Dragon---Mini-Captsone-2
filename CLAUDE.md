@@ -29,14 +29,17 @@ One ESP32 DevKit on the robot runs everything. No second microcontroller.
 
 | Function | Part | ESP32 pins |
 |---|---|---|
-| Left wheels (front + rear in parallel on AO1/AO2, joined on breadboard) | Driver module 1, channel A (DRV8833-style, no PWM pin) | AIN1 19 / AIN2 18 · STBY 21 |
-| Right wheels (front, rear) | Driver module 2 | FR: IN1 26 / IN2 27 · RR: IN1 33 / IN2 32 · STBY 25 |
+| Left wheels (front on AO1/AO2, rear on BO1/BO2) | DRV8833 module 1 on breadboard, AIN1↔BIN1 and AIN2↔BIN2 bridged | AIN1 32 / AIN2 33 · STBY → 3V3 |
+| Right wheels (front on AO1/AO2, rear on BO1/BO2) | DRV8833 module 2, same bridges | AIN1 25 / AIN2 26 · STBY → 3V3 |
 | Left wing | MG90S servo | 13 |
 | Right wing | MG90S servo (mirrored) | 14 |
 | Egg | MG90S servo | 16 |
-| Bubbles ("soap") | DC motor from an EagleStone 4×AA bubble gun, on driver module 1 channel B (BO1/BO2). No MOSFET available, so a driver channel is used instead. | BIN1 22 / BIN2 23 |
+| Bubbles ("soap") | DC motor from an EagleStone 4×AA bubble gun, on a 3rd DRV8833 module (AO1/AO2, STBY → 3V3). No MOSFET available. | AIN1 22 / AIN2 23 |
 
-LEDC channels (core 2.x): wheel motors 0–1 and 4–7, bubble motor 2–3
+Buttons: 4 = left, 5 = right, 15 = forward, 34 = back, 35 = action
+(1 tap egg, 2 taps wings, 3 taps bubbles, `TAP_WINDOW_MS`).
+
+LEDC channels (core 2.x): wheel motors 0–1 (left) and 4–5 (right), bubble motor 2–3
 (all 20 kHz, 8-bit), servos 8–10 (50 Hz, 14-bit). Channels share timers in pairs,
 so do not put a different frequency on the partner of a used channel.
 

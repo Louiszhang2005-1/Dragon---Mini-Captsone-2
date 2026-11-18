@@ -14,31 +14,36 @@
     Wire: dongle outputs -> ESP32 pins below, dongle GND -> ESP32 GND,
           dongle power   -> ESP32 3V3 (or 5V/VIN).
 
-  BUTTONS
-    MOVE LEFT  + MOVE RIGHT held together -> drive forward
-    MOVE LEFT  alone                      -> turn left
-    MOVE RIGHT alone                      -> turn right
-    nothing held                          -> stop
-    EGG   (press) -> egg opens; press again -> egg closes
-    WINGS (press) -> wings flap 3 cycles (down -> 45° up -> down)
-    SOAP  (press) -> soap-gun motor runs for SOAP_RUN_MS (one dose)
+  BUTTONS (4 direction buttons + 1 action button)
+    FORWARD held -> drive forward      BACK held  -> drive backward
+    LEFT    held -> turn left          RIGHT held -> turn right
+    (LEFT + RIGHT together also = forward)   nothing held -> stop
+    ACTION button, counted taps (TAP_WINDOW_MS between taps):
+      1 tap  -> egg opens / closes
+      2 taps -> wings flap 3 cycles
+      3 taps -> bubbles (soap-gun motor runs SOAP_RUN_MS)
 
   WIRING SUMMARY
-    Drive + bubble motor (two DRV8833-style driver modules):
-      Module 1: AIN1 19, AIN2 18 -> AO1/AO2 = BOTH left wheels in parallel
-                (front-left and rear-left joined on a breadboard row pair)
-                BIN1 22, BIN2 23 -> BO1/BO2 = bubble (soap-gun) motor
-                STBY 21
-      Module 2 (right): AIN1 26, AIN2 27, BIN1 33, BIN2 32, STBY 25
+    Drive (two DRV8833-style driver modules on the breadboard):
+      On each module AIN1<->BIN1 and AIN2<->BIN2 are bridged, so both
+      channels get the same command (more current per side).
+      STBY of both modules is tied to ESP32 3V3 (always enabled).
+      DRV 1 (left wheels):  AIN1 32, AIN2 33
+                            AO1/AO2 = front-left, BO1/BO2 = rear-left
+      DRV 2 (right wheels): AIN1 25, AIN2 26
+                            AO1/AO2 = front-right, BO1/BO2 = rear-right
+      VM -> battery + (after switch), GND -> common GND
     Servo signal wires:
       Left wing 13, Right wing 14, Egg 16
     Soap-gun motor (batteries removed from the gun, trigger switch bypassed):
-      its 2 wires -> BO1 / BO2 of module 1. Nothing goes to the ESP32 directly.
+      needs its own driver: a 3rd DRV8833 with AIN1 22, AIN2 23,
+      STBY -> 3V3, VM -> battery +, GND -> common, motor on AO1/AO2.
+      Nothing goes to the ESP32 directly.
       If it spins the wrong way (no bubbles), swap the 2 wires or set
       SOAP_REVERSE = true.
     Dongle outputs:
-      OUT1 -> 4 (move left), OUT2 -> 5 (move right), OUT3 -> 15 (egg),
-      OUT4 -> 34 (wings),    OUT5 -> 35 (soap)
+      OUT1 -> 4 (left),  OUT2 -> 5 (right), OUT3 -> 15 (forward),
+      OUT4 -> 34 (back), OUT5 -> 35 (action: 1/2/3 taps)
       NOTE: pins 34/35 have no internal pull-up. The dongle provides one, so
       this is fine when it is plugged in. If they trigger by themselves with
       the dongle unplugged, add a 10 kΩ resistor from each pin to 3V3.
@@ -46,8 +51,7 @@
   POWER — 2x 1S LiPo (3.7 V 2000 mAh) wired in SERIES = 7.4 V (8.4 V full)
     Cell 1 (-) -> GND.  Cell 1 (+) -> Cell 2 (-).  Cell 2 (+) = 7.4 V rail.
     Add a main ON/OFF switch on the 7.4 V wire.
-    7.4 V rail -> VM of both motor driver modules (DRV8833 max 10.8 V: OK)
-               (module 1 also powers the soap-gun motor through BO1/BO2)
+    7.4 V rail -> VM of every motor driver module (DRV8833 max 10.8 V: OK)
                -> 5 V step-down (buck) converter, >= 3 A
                     -> servo red wires (+5 V) AND ESP32 "5V/VIN" pin
     ALL grounds tied together: battery -, buck GND, ESP32 GND, driver GNDs,
@@ -105,24 +109,28 @@ const bool LOAD_SAVED_PARAMS = true;
 int DRIVE_SPEED      = 255;   // both move buttons held -> straight
 int TURN_OUTER_SPEED = 255;   // wheels on the outside of the turn
 int TURN_INNER_SPEED = -255;  // inside wheels: -255 = spin in place, 0 = wide arc
-int MOTOR_MAX_DUTY = 255;         // 255 = full power. Battery is now 3.7 V
-                                 // (4.2 V full), so no cap needed.
-                                 // !! If the battery goes back to 7.4 V,
-                                 // set this back to 180 (≈ 6 V max).
+int MOTOR_MAX_DUTY = 165;         // Battery is now 9.3 V: 165/255 × 9.3 V ≈ 6 V
+                                 // max on the ~6 V wheel motors.
+                                 // Formula: 255 × 6 / battery voltage.
+                                 // (3.7 V battery -> 255, 7.4 V pair -> 180)
 unsigned long RAMP_TIME_MS   = 300;        // time to go 0 -> full (0 = instant)
 unsigned long COMBO_DELAY_MS = 80;         // grace time so pressing both buttons
                                            // doesn't cause a short turn first
 
-// Calibration (same meaning as in RP2_Motor_code)
-// Both left wheels share one driver channel (module 1, A), so the
-// "front left" trim/invert applies to both of them. To flip only the
-// rear-left wheel, swap its 2 wires on the breadboard.
-float TRIM_FRONT_LEFT  = 1.00;   // = both left wheels
-float TRIM_FRONT_RIGHT = 1.00;
-float TRIM_REAR_RIGHT  = 1.00;
-bool INVERT_FRONT_LEFT  = false; // = both left wheels
-bool INVERT_FRONT_RIGHT = false;
-bool INVERT_REAR_RIGHT  = false;
+// ======================= ACTION BUTTON (taps) =================
+// Taps on the action button are counted. When no new tap comes within
+// TAP_WINDOW_MS (and the button is released), the action runs:
+// 1 tap = egg, 2 taps = wings, 3 taps (or more) = bubbles.
+// Longer window = easier for slow tappers, but every action starts later.
+unsigned long TAP_WINDOW_MS = 500;
+
+// Calibration. Each driver module drives both wheels of its side with the
+// same command, so trim / invert are per side. To flip only ONE wheel,
+// swap that wheel's 2 motor wires on the breadboard.
+float TRIM_LEFT   = 1.00;   // both left wheels  (DRV 1)
+float TRIM_RIGHT  = 1.00;   // both right wheels (DRV 2)
+bool  INVERT_LEFT  = false;
+bool  INVERT_RIGHT = false;
 
 // ======================= WING SETTINGS ========================
 // Angles are servo angles (0..180). REST = start position, FLAP = flapped.
@@ -146,16 +154,16 @@ float EGG_OPEN_ANGLE   = 70;
 float EGG_SPEED_DPS    = 60;   // slow, smooth opening
 
 // ======================= SOAP SETTINGS ========================
-// The DC motor taken out of the soap gun, driven by channel B of
-// motor driver module 1 (BO1/BO2).
+// The DC motor taken out of the soap gun, driven by a 3rd DRV8833
+// module (AIN1 22 / AIN2 23, motor on AO1/AO2).
 // Default: each press runs the motor for SOAP_RUN_MS (one dose).
 bool          SOAP_REVERSE     = false; // true = spin the other way (no bubbles?)
 unsigned long SOAP_RUN_MS      = 1500;  // dose length — tune by testing
 bool          SOAP_HOLD_TO_RUN = false; // true = runs as long as button is held
 unsigned long SOAP_MAX_MS      = 5000;  // safety limit in hold mode
 unsigned long SOAP_COOLDOWN_MS = 1000;  // min. time between two doses
-int           SOAP_POWER_PCT   = 100;   // full power on the 3.7 V battery.
-                                        // !! Set back to 75 if battery goes to 7.4 V
+int           SOAP_POWER_PCT   = 65;    // 65% of 9.3 V ≈ 6 V = the gun's 4xAA.
+                                        // Formula: 100 × 6 / battery voltage.
 
 // ======================= SERVO PULSE ==========================
 // MG90S: about 500 µs = 0°, 2400 µs = 180°. Narrow this if a servo buzzes
@@ -168,21 +176,24 @@ int SERVO_MAX_US = 2400;
 // ========================= PINS ===============================
 const uint8_t PIN_BTN_MOVE_LEFT  = 4;
 const uint8_t PIN_BTN_MOVE_RIGHT = 5;
-const uint8_t PIN_BTN_EGG        = 15;
-const uint8_t PIN_BTN_WINGS      = 34;
-const uint8_t PIN_BTN_SOAP       = 35;
+const uint8_t PIN_BTN_FORWARD    = 15;
+const uint8_t PIN_BTN_BACK       = 34;
+const uint8_t PIN_BTN_ACTION     = 35;   // 1 / 2 / 3 taps
 
 const uint8_t PIN_SERVO_WING_L = 13;
 const uint8_t PIN_SERVO_WING_R = 14;
 const uint8_t PIN_SERVO_EGG    = 16;
-// Bubble motor = channel B of driver module 1 (BIN1 / BIN2 -> BO1 / BO2)
+// Wheel drivers (STBY of both modules is wired to 3V3, not to a GPIO)
+const uint8_t PIN_LEFT_IN1     = 32;   // DRV 1 AIN1 (bridged to BIN1)
+const uint8_t PIN_LEFT_IN2     = 33;   // DRV 1 AIN2 (bridged to BIN2)
+const uint8_t PIN_RIGHT_IN1    = 25;   // DRV 2 AIN1 (bridged to BIN1)
+const uint8_t PIN_RIGHT_IN2    = 26;   // DRV 2 AIN2 (bridged to BIN2)
+
+// Bubble motor = 3rd DRV8833 module (AIN1 / AIN2 -> AO1 / AO2)
 const uint8_t PIN_SOAP_IN1     = 22;
 const uint8_t PIN_SOAP_IN2     = 23;
 const uint8_t SOAP_PWM_CH1     = 2;    // LEDC channels (core 2.x only),
 const uint8_t SOAP_PWM_CH2     = 3;    // same 20 kHz as the wheel motors
-
-const uint8_t STBY_LEFT  = 21;
-const uint8_t STBY_RIGHT = 25;
 
 const uint32_t MOTOR_PWM_FREQ = 20000;  // 20 kHz, no motor whine
 const uint8_t  MOTOR_PWM_BITS = 8;      // duty 0..255
@@ -220,14 +231,14 @@ struct Button {
   bool justPressed;       // true for one loop on a new press
 };
 
-enum { BTN_MOVE_LEFT, BTN_MOVE_RIGHT, BTN_EGG, BTN_WINGS, BTN_SOAP, NUM_BTN };
+enum { BTN_MOVE_LEFT, BTN_MOVE_RIGHT, BTN_FORWARD, BTN_BACK, BTN_ACTION, NUM_BTN };
 
 Button buttons[NUM_BTN] = {
   {"Move Left",  PIN_BTN_MOVE_LEFT,  false, false, 0, false},
   {"Move Right", PIN_BTN_MOVE_RIGHT, false, false, 0, false},
-  {"Egg",        PIN_BTN_EGG,        false, false, 0, false},
-  {"Wings",      PIN_BTN_WINGS,      false, false, 0, false},
-  {"Soap",       PIN_BTN_SOAP,       false, false, 0, false},
+  {"Forward",    PIN_BTN_FORWARD,    false, false, 0, false},
+  {"Back",       PIN_BTN_BACK,       false, false, 0, false},
+  {"Action",     PIN_BTN_ACTION,     false, false, 0, false},
 };
 
 const unsigned long DEBOUNCE_MS = 25;
@@ -363,7 +374,7 @@ void eggToggle() {
 
 
 // ================ SOAP (motor from the soap gun) ==============
-// ESP32 22/23 -> driver module 1 BIN1/BIN2 -> BO1/BO2 -> gun's DC motor.
+// ESP32 22/23 -> 3rd driver module AIN1/AIN2 -> AO1/AO2 -> gun's DC motor.
 bool soapRunning = false;
 unsigned long soapStartedAt = 0;
 unsigned long soapLastEnded = 0;
@@ -406,7 +417,7 @@ void updateSoap(unsigned long now) {
   if (SOAP_HOLD_TO_RUN) {
     // Runs while the button is held (or SOAP_RUN_MS for a serial 's' test),
     // but never longer than SOAP_MAX_MS.
-    bool held = buttons[BTN_SOAP].stable;
+    bool held = buttons[BTN_ACTION].stable;
     stop = (!held && now - soapStartedAt >= SOAP_RUN_MS) || (now - soapStartedAt >= SOAP_MAX_MS);
   } else {
     stop = (now - soapStartedAt >= SOAP_RUN_MS);   // one fixed dose per press
@@ -420,6 +431,29 @@ void updateSoap(unsigned long now) {
 }
 
 
+// ================== ACTION BUTTON (tap counter) ===============
+// Counts taps on the action button. The action runs once the button is
+// released and no new tap arrived for TAP_WINDOW_MS.
+int tapCount = 0;
+unsigned long lastTapAt = 0;
+
+void runTapAction(int taps) {
+  Serial.printf("[taps] %d -> ", taps);
+  if (taps == 1)      { Serial.println("egg");     eggToggle(); }
+  else if (taps == 2) { Serial.println("wings");   wingsStart(); }
+  else                { Serial.println("bubbles"); soapStart(); }  // 3 or more
+}
+
+void updateTaps(unsigned long now) {
+  Button &b = buttons[BTN_ACTION];
+  if (b.justPressed) { tapCount++; lastTapAt = now; }
+  if (tapCount > 0 && !b.stable && now - lastTapAt >= TAP_WINDOW_MS) {
+    runTapAction(tapCount);
+    tapCount = 0;
+  }
+}
+
+
 // ======================== DRIVE ===============================
 struct Motor {
   const char* name;
@@ -429,12 +463,12 @@ struct Motor {
   bool  invert;
 };
 
-// Module 1, B (pins 22/23, channels 2/3) is used by the bubble motor.
-enum { M_LEFT, M_FRONT_RIGHT, M_REAR_RIGHT, NUM_MOTORS };
+// One entry per side: each drives a whole DRV8833 (A and B bridged).
+// LEDC channels 2/3 are used by the bubble motor.
+enum { M_LEFT, M_RIGHT, NUM_MOTORS };
 Motor motors[NUM_MOTORS] = {
-  {"Left (both)", 19, 18, 0, 1, 1.0, false},  // Module 1, A: front + rear left
-  {"Front Right", 26, 27, 4, 5, 1.0, false},  // Module 2, A
-  {"Rear Right",  33, 32, 6, 7, 1.0, false},  // Module 2, B
+  {"Left",  PIN_LEFT_IN1,  PIN_LEFT_IN2,  0, 1, 1.0, false},  // DRV 1
+  {"Right", PIN_RIGHT_IN1, PIN_RIGHT_IN2, 4, 5, 1.0, false},  // DRV 2
 };
 
 // Slow-decay drive, same as RP2_Motor_code. value -255..255, 0 = brake.
@@ -466,10 +500,7 @@ void initMotors() {
     pwmAttach(motors[i].in2, motors[i].ch2, MOTOR_PWM_FREQ, MOTOR_PWM_BITS);
     coastMotor(motors[i]);
   }
-  pinMode(STBY_LEFT, OUTPUT);
-  pinMode(STBY_RIGHT, OUTPUT);
-  digitalWrite(STBY_LEFT, HIGH);
-  digitalWrite(STBY_RIGHT, HIGH);
+  // STBY is hard-wired to 3V3 on both modules: nothing to do here.
 }
 
 float curLeft = 0, curRight = 0;          // current (ramped) side speeds
@@ -489,15 +520,22 @@ float approach(float cur, float tgt, float maxStep) {
 void updateDrive(unsigned long now, float dt) {
   bool L = buttons[BTN_MOVE_LEFT].stable;
   bool R = buttons[BTN_MOVE_RIGHT].stable;
+  bool F = buttons[BTN_FORWARD].stable;
+  bool back = buttons[BTN_BACK].stable;
 
-  bool back = false;
   if (simMove && now < simUntil) {
     L = (simMove == 'f' || simMove == 'l');
     R = (simMove == 'f' || simMove == 'r');
+    F = false;
     back = (simMove == 'b');
   } else simMove = 0;
 
-  int combo = back ? 4 : ((L ? 1 : 0) | (R ? 2 : 0));
+  // Forward + back together cancel out -> stop (safe default)
+  int combo;
+  if (F && back)  combo = 0;
+  else if (F)     combo = 3;
+  else if (back)  combo = 4;
+  else            combo = (L ? 1 : 0) | (R ? 2 : 0);
   if (combo != lastMoveCombo) { lastMoveCombo = combo; moveComboSince = now; }
 
   // A single button just pressed might be the start of a two-button press:
@@ -507,7 +545,7 @@ void updateDrive(unsigned long now, float dt) {
   if (!waitingForCombo) {
     switch (combo) {
       case 3: tgtLeft = DRIVE_SPEED;      tgtRight = DRIVE_SPEED;      break; // forward
-      case 4: tgtLeft = -DRIVE_SPEED;     tgtRight = -DRIVE_SPEED;     break; // back (phone/serial)
+      case 4: tgtLeft = -DRIVE_SPEED;     tgtRight = -DRIVE_SPEED;     break; // back
       case 1: tgtLeft = TURN_INNER_SPEED; tgtRight = TURN_OUTER_SPEED; break; // turn left
       case 2: tgtLeft = TURN_OUTER_SPEED; tgtRight = TURN_INNER_SPEED; break; // turn right
       default: tgtLeft = 0;               tgtRight = 0;                break; // stop
@@ -518,9 +556,8 @@ void updateDrive(unsigned long now, float dt) {
   curLeft  = approach(curLeft,  tgtLeft,  maxStep);
   curRight = approach(curRight, tgtRight, maxStep);
 
-  setMotor(motors[M_LEFT],        (int)curLeft);   // both left wheels
-  setMotor(motors[M_FRONT_RIGHT], (int)curRight);
-  setMotor(motors[M_REAR_RIGHT],  (int)curRight);
+  setMotor(motors[M_LEFT],  (int)curLeft);    // both left wheels
+  setMotor(motors[M_RIGHT], (int)curRight);   // both right wheels
 }
 
 
@@ -550,12 +587,11 @@ Param params[] = {
   {"maxDuty","Motor max duty (180 = 6 V)","Drive",P_INT,   &MOTOR_MAX_DUTY,      0,    255,   1},
   {"ramp",   "Ramp time (ms)",           "Drive", P_ULONG, &RAMP_TIME_MS,        0,    2000,  10},
   {"combo",  "Combo delay (ms)",         "Drive", P_ULONG, &COMBO_DELAY_MS,      0,    300,   5},
-  {"trFL",   "Trim left wheels",         "Wheels",P_FLOAT, &TRIM_FRONT_LEFT,     0,    1.5,   0.01},
-  {"trFR",   "Trim front right",         "Wheels",P_FLOAT, &TRIM_FRONT_RIGHT,    0,    1.5,   0.01},
-  {"trRR",   "Trim rear right",          "Wheels",P_FLOAT, &TRIM_REAR_RIGHT,     0,    1.5,   0.01},
-  {"invFL",  "Invert left wheels",       "Wheels",P_BOOL,  &INVERT_FRONT_LEFT,   0,    1,     1},
-  {"invFR",  "Invert front right",       "Wheels",P_BOOL,  &INVERT_FRONT_RIGHT,  0,    1,     1},
-  {"invRR",  "Invert rear right",        "Wheels",P_BOOL,  &INVERT_REAR_RIGHT,   0,    1,     1},
+  {"tapWin", "Tap window (ms)",          "Action",P_ULONG, &TAP_WINDOW_MS,       200,  1500,  50},
+  {"trL",    "Trim left wheels",         "Wheels",P_FLOAT, &TRIM_LEFT,           0,    1.5,   0.01},
+  {"trR",    "Trim right wheels",        "Wheels",P_FLOAT, &TRIM_RIGHT,          0,    1.5,   0.01},
+  {"invL",   "Invert left wheels",       "Wheels",P_BOOL,  &INVERT_LEFT,         0,    1,     1},
+  {"invR",   "Invert right wheels",      "Wheels",P_BOOL,  &INVERT_RIGHT,        0,    1,     1},
   {"wLr",    "Left wing rest (deg)",     "Wings", P_FLOAT, &WING_LEFT_REST,      0,    180,   1},
   {"wLf",    "Left wing up (deg)",       "Wings", P_FLOAT, &WING_LEFT_FLAP,      0,    180,   1},
   {"wRr",    "Right wing rest (deg)",    "Wings", P_FLOAT, &WING_RIGHT_REST,     0,    180,   1},
@@ -610,9 +646,8 @@ Param* findParam(const String &key) {
 // Safe to call any time; never starts a motor.
 void syncParams() {
   if (SERVO_MIN_US >= SERVO_MAX_US - 100) SERVO_MIN_US = SERVO_MAX_US - 100;
-  motors[M_LEFT].trim        = TRIM_FRONT_LEFT;  motors[M_LEFT].invert        = INVERT_FRONT_LEFT;
-  motors[M_FRONT_RIGHT].trim = TRIM_FRONT_RIGHT; motors[M_FRONT_RIGHT].invert = INVERT_FRONT_RIGHT;
-  motors[M_REAR_RIGHT].trim  = TRIM_REAR_RIGHT;  motors[M_REAR_RIGHT].invert  = INVERT_REAR_RIGHT;
+  motors[M_LEFT].trim  = TRIM_LEFT;  motors[M_LEFT].invert  = INVERT_LEFT;
+  motors[M_RIGHT].trim = TRIM_RIGHT; motors[M_RIGHT].invert = INVERT_RIGHT;
   servos[SV_WING_L].speedDps = WING_SPEED_DPS;
   servos[SV_WING_R].speedDps = WING_SPEED_DPS;
   servos[SV_EGG].speedDps    = EGG_SPEED_DPS;
@@ -870,14 +905,14 @@ void setup() {
   syncParams();
   for (int i = 0; i < NUM_SERVO; i++)  // start servos at rest, no motion at boot
     servos[i].current = servos[i].target;
-  initSoap();      // before initMotors(): bubble motor inputs LOW before STBY goes HIGH
+  initSoap();      // bubble motor inputs LOW as early as possible
   initMotors();
   initServos();
   initButtons();
   initWifi();
   Serial.println("==============================");
   Serial.println("Dragon robot ready.");
-  Serial.println("Both move buttons = forward, one = turn. Egg / Wings / Soap buttons.");
+  Serial.println("Buttons: forward / back / left / right. Action: 1 tap egg, 2 wings, 3 bubbles.");
   Serial.println("Serial test: f b l r x e w s ?   p = parameters");
   lastTick = millis();
 }
@@ -892,10 +927,7 @@ void loop() {
   handleSerial(now);
   updateButtons(now);
 
-  if (buttons[BTN_EGG].justPressed)   eggToggle();
-  if (buttons[BTN_WINGS].justPressed) wingsStart();
-  if (buttons[BTN_SOAP].justPressed)  soapStart();
-
+  updateTaps(now);
   updateDrive(now, dt);
   updateWings(now);
   updateSoap(now);
